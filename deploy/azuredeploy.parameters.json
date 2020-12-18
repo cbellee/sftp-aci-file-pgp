@@ -1,0 +1,33 @@
+{
+	"$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentParameters.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"location": {
+			"value": "australiaeast"
+		},
+		"sftpImageName": {
+			"value": "atmoz/sftp:latest"
+		},
+		"passPhrase": {
+			"value": null
+		},
+		"pgpPublicKey": {
+			"value": null
+		},
+		"pgpPrivateKey": {
+			"value": null
+		},
+		"sshPublicKey": {
+			"value": null
+		},
+		"sshPrivateKey": {
+			"value": null
+		},
+		"sftpUserName": {
+			"value": "cbellee"
+		},
+		"keyVaultUserObjectId": {
+			"value": null
+		}
+	}
+}

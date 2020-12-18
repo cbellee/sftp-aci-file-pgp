@@ -1,0 +1,217 @@
+trigger:
+  branches:
+    include:
+    - main
+    - master
+  
+variables:
+    azureSubscription: 'internal_azure_subscription' # change this to match a valid azure service connection in Azure DevOps
+    resourceGroupName: 'sftp-test-rg'
+    location: 'australiaeast'
+    vmImageName: 'ubuntu-latest'
+    configuration: 'Release'
+    sftpUserName: 'chris'
+    passPhrase: 'M1cr0soft' # ideally, consume this secret from a variable group
+    userObjectId: '57963f10-818b-406d-a2f6-6e758d86e259' # change this to a valid user objectId
+    sshKeyFileShareName: 'sshkeyfileshare'
+    sftpFileShareName: 'sftpfileshare'
+
+stages:
+  - stage: Build
+    displayName: 'Build'
+  
+    jobs:
+    - job: BuildFunctionAppJob
+      displayName: 'Build Function App Job'
+      pool:
+        vmImage: $(vmImageName)
+  
+      steps:
+      - task: DotNetCoreCLI@2
+        displayName: 'Build function App'
+        inputs:
+          command: 'build'
+          projects: |
+            src/functionApp/*.csproj
+          arguments: --output $(System.DefaultWorkingDirectory)/publish_output --configuration $(configuration)
+
+      - task: ArchiveFiles@2
+        displayName: 'Archive files'
+        inputs:
+          rootFolderOrFile: '$(System.DefaultWorkingDirectory)/publish_output'
+          includeRootFolder: false
+          archiveType: zip
+          archiveFile: $(Build.ArtifactStagingDirectory)/functionApp.$(Build.BuildId).zip
+          replaceExistingArchive: true
+  
+      - publish: $(Build.ArtifactStagingDirectory)/functionApp.$(Build.BuildId).zip
+        artifact: function_app_drop
+        displayName: 'Publish function App archive'
+
+    - job: BuildConsoleAppJob
+      displayName: 'Build Console App Job'
+      pool:
+        vmImage: $(vmImageName)
+
+      steps:
+      - task: DotNetCoreCLI@2
+        displayName: 'Build Console App'
+        inputs:
+          command: 'build'
+          projects: |
+            src/consoleApp/*.csproj
+          arguments: --output $(System.DefaultWorkingDirectory)/consoleapp_output --configuration $(configuration)
+
+      - task: CopyFiles@2
+        displayName: 'Copy console App'
+        inputs:
+          SourceFolder: '$(Build.SourcesDirectory)/consoleapp_output'
+          Contents: '**'
+          TargetFolder: '$(Build.ArtifactStagingDirectory)/consoleapp'
+
+      - publish: $(Build.ArtifactStagingDirectory)/consoleapp
+        artifact: console_app_drop
+        displayName: 'Publish Console App'
+
+    - job: CopyARMTemplates
+      displayName: 'Copy ARM Templates Job'
+      pool:
+        vmImage: $(vmImageName)
+
+      steps:
+      - task: CopyFiles@2
+        displayName: 'Copy ARM templates files'
+        inputs:
+          SourceFolder: '$(Build.SourcesDirectory)/deploy'
+          Contents: '**'
+          TargetFolder: '$(Build.ArtifactStagingDirectory)/deploy'
+
+      - publish: $(Build.ArtifactStagingDirectory)/deploy
+        artifact: arm_template_drop
+        displayName: 'Publish ARM deployment templates'
+
+  - stage: Deploy
+    displayName: 'Deploy'
+  
+    jobs:
+    - deployment: DeployInfrastructure
+      displayName: 'Deploy Infrastructure'
+      environment: 'development'
+      pool:
+        vmImage: $(vmImageName)
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+
+            - bash: printenv
+            
+            - bash: chmod +x $(Pipeline.Workspace)/arm_template_drop/sshkey.sh
+              displayName: 'Enable execute bit on Bash script file'
+
+            - bash: chmod +x $(Pipeline.Workspace)/arm_template_drop/pgpkey.sh
+              displayName: 'Enable execute bit on Bash script file'
+
+            - bash: chmod +x $(Pipeline.Workspace)/console_app_drop/consoleApp
+              displayName: 'Enable execute bit on Console App executable file'
+
+            - bash: $(Pipeline.Workspace)/arm_template_drop/sshkey.sh -p $(passPhrase)
+              displayName: 'Generate SSH key pair'
+
+            - bash: $(Pipeline.Workspace)/arm_template_drop/pgpkey.sh -p $(passPhrase) -o $(Pipeline.Workspace)
+              displayName: 'Generate PGP key pair'
+
+            - task: AzureResourceManagerTemplateDeployment@3
+              displayName: 'Validate infrastructure template'
+              inputs:
+                action: Create Or Update Resource Group
+                azureResourceManagerConnection: '$(azureSubscription)'
+                csmFile: $(Pipeline.Workspace)/arm_template_drop/azuredeploy.json
+                csmParametersFile: $(Pipeline.Workspace)/arm_template_drop/azuredeploy.parameters.json
+                resourceGroupName: $(resourceGroupName)
+                location: $(location)
+                deploymentMode: Validation
+                deploymentScope: Resource Group
+                overrideParameters: -location $(location) -sshKeyFileShareName $(sshKeyFileShareName) -passPhrase "$(passPhrase)" -sshPublicKey "$(sshPublicKey)" -sshPrivateKey "$(sshPrivateKey)" -pgpPublicKey "$(pgpPublicKey)" -pgpPrivateKey "$(pgpPrivateKey)" -sftpUserName $(sftpUserName) -sftpFileShareName $(sftpFileShareName) -keyVaultUserObjectId $(userObjectId)
+
+            - task: AzureResourceManagerTemplateDeployment@3
+              displayName: 'Deploy infrastructure template'
+              inputs:
+                action: Create Or Update Resource Group
+                azureResourceManagerConnection: '$(azureSubscription)'
+                csmFile: $(Pipeline.Workspace)/arm_template_drop/azuredeploy.json
+                csmParametersFile: $(Pipeline.Workspace)/arm_template_drop/azuredeploy.parameters.json
+                resourceGroupName: $(resourceGroupName)
+                location: $(location)
+                deploymentMode: Incremental
+                deploymentScope: Resource Group
+                deploymentName: 'deploy-infrastructure'
+                overrideParameters: -location $(location) -sshKeyFileShareName $(sshKeyFileShareName) -passPhrase "$(passPhrase)" -sshPublicKey "$(sshPublicKey)" -sshPrivateKey "$(sshPrivateKey)" -pgpPublicKey "$(pgpPublicKey)" -pgpPrivateKey "$(pgpPrivateKey)" -sftpUserName $(sftpUserName) -sftpFileShareName $(sftpFileShareName) -keyVaultUserObjectId $(userObjectId)
+                deploymentOutputs: infraDeploymentOutputs
+
+            - task: PowerShell@2
+              displayName: 'Get ARM Deployment Outputs'
+              name: getArmOutputs
+              inputs:
+                targetType: 'inline'
+                script: |
+                  $outputs = '$(infraDeploymentOutputs)' | ConvertFrom-Json
+                  foreach ($output in $outputs.PSObject.Properties) {
+                    Write-Host "$($output.Name): $($output.Value.value)"
+                    Write-Host "##vso[task.setvariable variable=$($output.Name);isOutput=true;]$($output.Value.value)" 
+                  }
+
+            - bash: az storage file upload --share-name $SSHKEYFILESHARENAME --source ./id_rsa.pub --account-name $GETARMOUTPUTS_STORAGEACCOUNTNAME --account-key $GETARMOUTPUTS_STORAGEACCOUNTKEY
+              displayName: 'Upload SSH public key file to storage share'
+
+    - deployment: DeployFunctions
+      displayName: 'Deploy Functions & Logic App'
+      environment: 'development'
+      dependsOn: DeployInfrastructure
+      condition: succeeded()
+      variables:
+        functionAppName: $[ dependencies.DeployInfrastructure.outputs['DeployInfrastructure.getArmOutputs.functionAppName'] ]
+      pool:
+        vmImage: $(vmImageName)
+      strategy:
+        runOnce:
+          deploy:
+            steps:
+
+            - task: AzureFunctionApp@1
+              displayName: 'Function App deployment'
+              inputs:
+                azureSubscription: '$(azureSubscription)'
+                resourceGroupName: $(resourceGroupName)
+                appType: functionApp
+                appName: $(functionAppName)
+                deploymentMethod: zipDeploy
+                package: '$(Pipeline.Workspace)/function_app_drop/functionApp.$(Build.BuildId).zip'
+
+            - task: AzureResourceManagerTemplateDeployment@3
+              displayName: 'Validate logic app template'
+              inputs:
+                action: Create Or Update Resource Group
+                azureResourceManagerConnection: '$(azureSubscription)'
+                csmFile: $(Pipeline.Workspace)/arm_template_drop/azuredeploy-logic-app.json
+                csmParametersFile: $(Pipeline.Workspace)/arm_template_drop/azuredeploy-logic-app.parameters.json
+                resourceGroupName: $(resourceGroupName)
+                location: $(location)
+                deploymentMode: Validation
+                deploymentScope: Resource Group
+                overrideParameters: -location $(location)
+
+            - task: AzureResourceManagerTemplateDeployment@3
+              displayName: 'Deploy logic app template'
+              inputs:
+                action: Create Or Update Resource Group
+                azureResourceManagerConnection: '$(azureSubscription)'
+                csmFile: $(Pipeline.Workspace)/arm_template_drop/azuredeploy-logic-app.json
+                csmParametersFile: $(Pipeline.Workspace)/arm_template_drop/azuredeploy-logic-app.parameters.json
+                resourceGroupName: $(resourceGroupName)
+                location: $(location)
+                deploymentMode: Incremental
+                deploymentScope: Resource Group
+                deploymentName: 'deploy-logic-app'
+                overrideParameters: -location $(location)
+                deploymentOutputs: logicAppDeploymentOutputs

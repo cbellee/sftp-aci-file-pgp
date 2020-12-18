@@ -1,0 +1,250 @@
+{
+	"$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+	"contentVersion": "1.0.0.0",
+	"parameters": {
+		"location": {
+			"type": "string"
+		}
+	},
+	"functions": [],
+	"variables": {
+		"suffix": "[substring(uniqueString(subscription().subscriptionid, resourceGroup().id), 0, 6)]",
+		"functionAppName": "[concat('func-', variables('suffix'))]",
+		"logicAppWorkflowName": "[concat('decrypt-logic-app-', variables('suffix'))]"
+	},
+	"resources": [
+		{
+			"type": "Microsoft.Logic/workflows",
+			"apiVersion": "2017-07-01",
+			"name": "[variables('logicAppWorkflowName')]",
+			"location": "[parameters('location')]",
+			"dependsOn": [
+			],
+			"properties": {
+				"state": "Enabled",
+				"definition": {
+					"$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+					"contentVersion": "1.0.0.0",
+					"parameters": {
+						"$connections": {
+							"defaultValue": {},
+							"type": "Object"
+						}
+					},
+					"triggers": {
+						"When_a_blob_is_added_or_modified_(properties_only)": {
+							"recurrence": {
+								"frequency": "Minute",
+								"interval": 1
+							},
+							"splitOn": "@triggerBody()",
+							"metadata": {
+								"JTJmc291cmNl": "/source"
+							},
+							"type": "ApiConnection",
+							"inputs": {
+								"host": {
+									"connection": {
+										"name": "@parameters('$connections')['azureblob']['connectionId']"
+									}
+								},
+								"method": "get",
+								"path": "/datasets/default/triggers/batch/onupdatedfile",
+								"queries": {
+									"folderId": "JTJmc291cmNl",
+									"maxFileCount": 1
+								}
+							}
+						}
+					},
+					"actions": {
+						"Create_Encrypted_file_in_blob_storage": {
+							"runAfter": {
+								"Set_encrypted_content_variable": [
+									"Succeeded"
+								]
+							},
+							"type": "ApiConnection",
+							"inputs": {
+								"body": "@variables('blobEncrypted')",
+								"host": {
+									"connection": {
+										"name": "@parameters('$connections')['azureblob']['connectionId']"
+									}
+								},
+								"method": "post",
+								"path": "/datasets/default/files",
+								"queries": {
+									"folderPath": "/destination/",
+									"name": "blobencrypted@{triggerBody()?['Name']}",
+									"queryParametersSingleEncoded": true
+								}
+							},
+							"runtimeConfiguration": {
+								"contentTransfer": {
+									"transferMode": "Chunked"
+								}
+							}
+						},
+						"Create_file": {
+							"runAfter": {
+								"Get_encrypted_file": [
+									"Succeeded"
+								]
+							},
+							"type": "ApiConnection",
+							"inputs": {
+								"body": "@body('Get_encrypted_file')",
+								"headers": {
+									"ReadFileMetadataFromServer": true
+								},
+								"host": {
+									"connection": {
+										"name": "@parameters('$connections')['sftpwithssh']['connectionId']"
+									}
+								},
+								"method": "post",
+								"path": "/datasets/default/files",
+								"queries": {
+									"folderPath": "/upload/Uploads",
+									"name": "@body('Create_Encrypted_file_in_blob_storage')?['Name']",
+									"queryParametersSingleEncoded": true
+								}
+							},
+							"runtimeConfiguration": {
+								"contentTransfer": {
+									"transferMode": "Chunked"
+								}
+							}
+						},
+						"Get_blob_content": {
+							"runAfter": {
+								"Initialize_new_blob_variable": [
+									"Succeeded"
+								]
+							},
+							"type": "ApiConnection",
+							"inputs": {
+								"host": {
+									"connection": {
+										"name": "@parameters('$connections')['azureblob']['connectionId']"
+									}
+								},
+								"method": "get",
+								"path": "/datasets/default/files/@{encodeURIComponent(encodeURIComponent('/source/',triggerBody()?['Name']))}/content",
+								"queries": {
+									"inferContentType": true
+								}
+							}
+						},
+						"Get_encrypted_file": {
+							"runAfter": {
+								"Create_Encrypted_file_in_blob_storage": [
+									"Succeeded"
+								]
+							},
+							"type": "ApiConnection",
+							"inputs": {
+								"host": {
+									"connection": {
+										"name": "@parameters('$connections')['azureblob']['connectionId']"
+									}
+								},
+								"method": "get",
+								"path": "/datasets/default/files/@{encodeURIComponent(encodeURIComponent(body('Create_Encrypted_file_in_blob_storage')?['Path']))}/content",
+								"queries": {
+									"inferContentType": true
+								}
+							}
+						},
+						"Initialize_encrypted_content_variable": {
+							"runAfter": {
+								"PGPEncrypt": [
+									"Succeeded"
+								]
+							},
+							"type": "InitializeVariable",
+							"inputs": {
+								"variables": [
+									{
+										"name": "blobEncrypted",
+										"type": "string"
+									}
+								]
+							}
+						},
+						"Initialize_new_blob_variable": {
+							"runAfter": {},
+							"type": "InitializeVariable",
+							"inputs": {
+								"variables": [
+									{
+										"name": "blobContents",
+										"type": "string"
+									}
+								]
+							}
+						},
+						"PGPEncrypt": {
+							"runAfter": {
+								"set_blobcontents_variable": [
+									"Succeeded"
+								]
+							},
+							"type": "Function",
+							"inputs": {
+								"body": "@variables('blobContents')",
+								"function": {
+									"id": "[resourceId('Microsoft.Web/sites/functions', variables('functionAppName'), 'PGPEncrypt')]"
+								},
+								"method": "POST"
+							}
+						},
+						"Set_encrypted_content_variable": {
+							"runAfter": {
+								"Initialize_encrypted_content_variable": [
+									"Succeeded"
+								]
+							},
+							"type": "SetVariable",
+							"inputs": {
+								"name": "blobEncrypted",
+								"value": "@{body('PGPEncrypt')}"
+							}
+						},
+						"set_blobcontents_variable": {
+							"runAfter": {
+								"Get_blob_content": [
+									"Succeeded"
+								]
+							},
+							"type": "SetVariable",
+							"inputs": {
+								"name": "blobContents",
+								"value": "@{body('Get_blob_content')}"
+							}
+						}
+					},
+					"outputs": {}
+				},
+				"parameters": {
+					"$connections": {
+						"value": {
+							"azureblob": {
+								"connectionId": "[resourceId('Microsoft.Web/connections', 'azureblob')]",
+								"connectionName": "azureblob",
+								"id": "[concat('/subscriptions/', subscription().subscriptionid, '/providers/Microsoft.Web/locations/', parameters('location'), '/managedApis/', 'azureblob')]"
+							},
+							"sftpwithssh": {
+								"connectionId": "[resourceId('Microsoft.Web/connections', 'sftpwithssh')]",
+								"connectionName": "sftpwithssh",
+								"id": "[concat('/subscriptions/', subscription().subscriptionid, '/providers/Microsoft.Web/locations/', parameters('location'), '/managedApis/', 'sftpwithssh')]"
+							}
+						}
+					}
+				}
+			}
+		}
+	],
+	"outputs": {}
+}
