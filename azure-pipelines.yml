@@ -6,7 +6,7 @@ trigger:
   
 variables:
     azureSubscription: 'internal_azure_subscription' # change this to match a valid azure service connection in Azure DevOps
-    resourceGroupName: 'sftp-test-rg'
+    resourceGroupName: 'sftp-test-cbellee-rg'
     location: 'australiaeast'
     vmImageName: 'ubuntu-latest'
     configuration: 'Release'
