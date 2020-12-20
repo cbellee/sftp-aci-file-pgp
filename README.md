@@ -2,6 +2,8 @@
 
 Automated deployment of SFTP container instance (ACI), Key Vault & Azure Functions to Encrypt/Decrypt file using PGP.
 
+The solution generates PGP & SSH key pairs and saves them into Azure Key Vault.
+
 ## Deployment
 - Fork this repo into your own GitHub account
 - Create a new Azure DevOps YAML Pipeline
@@ -14,4 +16,5 @@ Automated deployment of SFTP container instance (ACI), Key Vault & Azure Functio
     - `sftpUserName: 'username' # change to your desired username`
     - `passPhrase: '********' # change this to desired PGP + SSH private key password`
     - `userObjectId: '57963f10-818b-406d-a2f6-6e758d86e259' # change this to a valid user objectId for it to access keyvault`
+- Save & run the pipeline to deploy the solution
    
